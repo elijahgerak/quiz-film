@@ -1,7 +1,9 @@
 // Keeps Quiz Film working with no connection once it has been opened: the app's own files are kept on the device.
-// With a connection a page is always fetched fresh, so a new build shows up at once; without one, the kept copy is
-// used. Anything that isn't one of the app's own files (speech, photos, the rulebook) goes straight to the network.
+// With a connection a page is always fetched fresh, so a new build shows up at once; without one, or with one too slow
+// to answer in a few seconds, the kept copy is used. Anything that isn't one of the app's own files (speech, photos,
+// the rulebook) goes straight to the network.
 const CACHE = 'quiz-film-v1';
+const SLOW_MS = 3000;   // how long a page or a file waits for the network when a kept copy is there
 const scope = new URL(self.registration.scope).pathname;
 
 self.addEventListener('install', () => self.skipWaiting());
@@ -25,14 +27,12 @@ self.addEventListener('fetch', event => {
     const cache = await caches.open(CACHE);
     // Build files carry their contents in their name, so a kept one is always right.
     if (url.pathname.includes('/assets/')) { const hit = await cache.match(request); if (hit) return hit; }
-    try {
-      const fresh = await fetch(request);
-      if (fresh.ok) cache.put(request, fresh.clone());
-      return fresh;
-    } catch (error) {
-      const hit = (await cache.match(request, {ignoreSearch: true})) || (request.mode === 'navigate' ? await cache.match(scope) : undefined);
-      if (hit) return hit;
-      throw error;
-    }
+    const kept = (await cache.match(request, {ignoreSearch: true})) || (request.mode === 'navigate' ? await cache.match(scope) : undefined);
+    const net = fetch(request).then(fresh => { if (fresh.ok) cache.put(request, fresh.clone()).catch(() => {}); return fresh; });
+    if (!kept) return net;
+    // A connection that is there but crawling (a tournament's Wi-Fi) doesn't hold the app up: after a few seconds the
+    // kept copy is used, and the fresh one is still kept when it arrives, for next time.
+    event.waitUntil(net.catch(() => {}));
+    return Promise.race([net.catch(() => kept), new Promise(done => setTimeout(() => done(kept), SLOW_MS))]);
   })());
 });
